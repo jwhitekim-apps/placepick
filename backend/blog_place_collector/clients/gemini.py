@@ -1,9 +1,13 @@
 import json
+import logging
+import time
 from collections import Counter
 
 import requests
 
-from blog_place_collector.config import GEMINI_API_KEY, GEMINI_API_URL
+from blog_place_collector.config import GEMINI_API_KEY, GEMINI_API_URL, GEMINI_MODEL
+
+logger = logging.getLogger(__name__)
 
 REGIONS_SCHEMA = {
     "type": "ARRAY",
@@ -112,7 +116,7 @@ OVERVIEW_PROMPT_TEMPLATE = """\
 """
 
 
-def _call_gemini(prompt, response_schema):
+def _call_gemini(prompt, response_schema, label="gemini"):
     # temperature=0: 같은 입력이면 같은 결과가 나오게 합니다. 기본 temperature(샘플링
     # 랜덤성)를 쓰면 70개 글처럼 큰 배치를 넣었을 때 호출마다 추출 결과가 크게 달라지는
     # 문제가 있었습니다 (예: 같은 업체 언급이 1회로도, 41회로도 잡힘).
@@ -124,11 +128,30 @@ def _call_gemini(prompt, response_schema):
             "temperature": 0,
         },
     }
-    response = requests.post(
-        GEMINI_API_URL,
-        params={"key": GEMINI_API_KEY},
-        json=payload,
-        timeout=60,
+    started = time.monotonic()
+    try:
+        response = requests.post(
+            GEMINI_API_URL,
+            params={"key": GEMINI_API_KEY},
+            json=payload,
+            timeout=60,
+        )
+    except requests.RequestException as error:
+        logger.warning(
+            "gemini call %s failed after %.1fs: %s",
+            label,
+            time.monotonic() - started,
+            type(error).__name__,
+        )
+        raise
+    elapsed = time.monotonic() - started
+    logger.info(
+        "gemini call %s model=%s status=%s prompt_chars=%d elapsed=%.1fs",
+        label,
+        GEMINI_MODEL,
+        response.status_code,
+        len(prompt),
+        elapsed,
     )
     response.raise_for_status()
     data = response.json()
@@ -139,7 +162,9 @@ def _call_gemini(prompt, response_schema):
 def extract_regions(keyword):
     """검색 키워드 문자열 자체에서 지역명을 추출합니다. 블로그 본문은 보지 않고
     키워드만 보므로, 여러 지역이 섞여 있거나 순서가 달라도 안정적으로 동작합니다."""
-    regions = _call_gemini(REGIONS_PROMPT_TEMPLATE.format(keyword=keyword), REGIONS_SCHEMA)
+    regions = _call_gemini(
+        REGIONS_PROMPT_TEMPLATE.format(keyword=keyword), REGIONS_SCHEMA, label="regions"
+    )
     return [region.strip() for region in regions if region.strip()]
 
 
@@ -165,14 +190,19 @@ def extract_business_names(posts, keyword):
     for start in range(0, len(posts), MAX_ITEMS_PER_CALL):
         chunk = posts[start : start + MAX_ITEMS_PER_CALL]
         schema = _business_names_schema(len(chunk))
-        entries = _call_gemini(_build_prompt(chunk, keyword), schema)
+        entries = _call_gemini(
+            _build_prompt(chunk, keyword),
+            schema,
+            label=f"business_names[{start + 1}-{start + len(chunk)}]",
+        )
         if len(entries) != len(chunk):
             # minItems/maxItems로 강제했음에도 길이가 다르면 API가 스키마를 못 지킨
             # 드문 경우입니다 — 있는 만큼은 그대로 쓰되, 놓친 항목이 있을 수 있다는
             # 신호로 남겨둡니다.
-            print(
-                f"[gemini] extract_business_names: 응답 {len(entries)}개, "
-                f"글 {len(chunk)}개 — 길이가 다릅니다."
+            logger.warning(
+                "extract_business_names: 응답 %d개, 글 %d개 — 길이가 다릅니다.",
+                len(entries),
+                len(chunk),
             )
 
         for entry in entries:
@@ -194,4 +224,4 @@ def extract_region_overview(posts, keyword):
     이 단계에서 뽑지 않고, 사용자가 지역+카테고리를 고른 뒤 extract_business_names로
     별도 처리합니다."""
     prompt = OVERVIEW_PROMPT_TEMPLATE.format(keyword=keyword, items=_numbered_posts(posts))
-    return _call_gemini(prompt, OVERVIEW_SCHEMA)
+    return _call_gemini(prompt, OVERVIEW_SCHEMA, label=f"region_overview[{len(posts)} posts]")

@@ -1,3 +1,5 @@
+import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -10,7 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from blog_place_collector.config import credential_status
+from blog_place_collector.log_config import configure_logging, describe_http_error
 from blog_place_collector.service import preview_collection, search_collection
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Placepick API",
@@ -46,6 +52,30 @@ def _friendly_error(error):
     return str(error) or "요청 처리 중 알 수 없는 오류가 발생했습니다."
 
 
+def _log_upstream_error(endpoint, keyword, error, elapsed):
+    """502로 바꿔 내려보내기 전에 원본 예외를 남깁니다. 비밀값은 RedactingFormatter가
+    traceback까지 지우고, HTTPError 요약은 쿼리스트링 없이 host+path만 씁니다."""
+    if isinstance(error, requests.HTTPError):
+        logger.error(
+            "%s failed: keyword=%r elapsed=%.1fs upstream HTTP error: %s",
+            endpoint,
+            keyword,
+            elapsed,
+            describe_http_error(error),
+            exc_info=error,
+        )
+    else:
+        logger.error(
+            "%s failed: keyword=%r elapsed=%.1fs %s: %s",
+            endpoint,
+            keyword,
+            elapsed,
+            type(error).__name__,
+            error,
+            exc_info=error,
+        )
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -56,6 +86,7 @@ def health():
 
 @app.post("/api/collections/preview")
 async def preview(payload: PreviewRequest):
+    started = time.monotonic()
     try:
         result = await run_in_threadpool(preview_collection, payload.keyword.strip())
         return {
@@ -63,11 +94,13 @@ async def preview(payload: PreviewRequest):
             **result,
         }
     except (requests.RequestException, ValueError, KeyError, IndexError) as error:
+        _log_upstream_error("preview", payload.keyword.strip(), error, time.monotonic() - started)
         raise HTTPException(status_code=502, detail=_friendly_error(error)) from error
 
 
 @app.post("/api/collections/search")
 async def search(payload: PreviewRequest):
+    started = time.monotonic()
     try:
         result = await run_in_threadpool(search_collection, payload.keyword.strip())
         return {
@@ -75,6 +108,7 @@ async def search(payload: PreviewRequest):
             **result,
         }
     except (requests.RequestException, ValueError, KeyError, IndexError) as error:
+        _log_upstream_error("search", payload.keyword.strip(), error, time.monotonic() - started)
         raise HTTPException(status_code=502, detail=_friendly_error(error)) from error
 
 

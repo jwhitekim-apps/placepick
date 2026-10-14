@@ -1,4 +1,6 @@
+import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
@@ -11,6 +13,9 @@ from blog_place_collector.clients.gemini import (
 )
 from blog_place_collector.clients.kakao import get_area_anchor, get_business_hours, search_place
 from blog_place_collector.clients.naver import naver_blog_search, naver_local_search
+from blog_place_collector.log_config import describe_http_error
+
+logger = logging.getLogger(__name__)
 
 # 사용자가 직접 고르던 값들을 상수로 고정합니다. 대신 수집 글 수는 결과가
 # 빈약하면(distinct 후보가 적거나 반복 언급이 없음) 자동으로 늘려서 재수집합니다.
@@ -86,20 +91,40 @@ def _collect_candidates(keyword):
     posts = []
     guesses = []
     regions = extract_regions(keyword)
+    logger.info("keyword=%r regions=%s", keyword, regions)
     extracted_count = 0
     previous_confirmed = 0
     for target_count in COLLECTION_TIERS:
+        tier_started = time.monotonic()
         posts = naver_blog_search(keyword=keyword, target_count=target_count)
         if not posts:
+            logger.info("keyword=%r tier=%d: 블로그 글 0개 — 중단", keyword, target_count)
             break
 
         new_posts = posts[extracted_count:]
+        extract_started = time.monotonic()
         if new_posts:
             guesses.extend(extract_business_names(new_posts, keyword))
             extracted_count = len(posts)
+        verify_started = time.monotonic()
         candidates = _verified_candidates(guesses, regions=regions, radius=DEFAULT_RADIUS)
+        verify_elapsed = time.monotonic() - verify_started
 
         confirmed = sum(1 for c in candidates if c["mention_count"] >= MIN_REPEAT_MENTION)
+        logger.info(
+            "keyword=%r tier=%d posts=%d new=%d guesses=%d candidates=%d confirmed=%d "
+            "extract=%.1fs verify=%.1fs tier_total=%.1fs",
+            keyword,
+            target_count,
+            len(posts),
+            len(new_posts),
+            len(guesses),
+            len(candidates),
+            confirmed,
+            verify_started - extract_started,
+            verify_elapsed,
+            time.monotonic() - tier_started,
+        )
         if confirmed >= MIN_REPEATED_CANDIDATES and confirmed <= previous_confirmed:
             break
         previous_confirmed = confirmed
@@ -126,8 +151,18 @@ def _finalize_candidates(candidates):
 def preview_collection(keyword):
     """수집부터 장소 매칭까지 실행하되 즐겨찾기는 변경하지 않습니다.
     지역+카테고리를 이미 확정한 드릴다운 검색에 씁니다(자동판단 없이 곧장 상세 결과)."""
+    started = time.monotonic()
+    logger.info("preview start keyword=%r", keyword)
     post_count, _posts, candidates, _regions = _collect_candidates(keyword)
-    return {"post_count": post_count, "candidates": _finalize_candidates(candidates)}
+    result = {"post_count": post_count, "candidates": _finalize_candidates(candidates)}
+    logger.info(
+        "preview done keyword=%r posts=%d shown=%d total=%.1fs",
+        keyword,
+        post_count,
+        len(result["candidates"]),
+        time.monotonic() - started,
+    )
+    return result
 
 
 def search_collection(keyword):
@@ -135,16 +170,33 @@ def search_collection(keyword):
     상세 검색(카카오 검증까지)을 먼저 시도하고, 결과가 확실하고 한 지역에 묶여 있으면
     그대로 보여주고, 빈약하거나 여러 지역에 흩어져 있으면 이미 수집해둔 글을
     재사용해 지역별 개요로 전환합니다."""
+    started = time.monotonic()
+    logger.info("search start keyword=%r", keyword)
     post_count, posts, candidates, regions = _collect_candidates(keyword)
 
     if not posts or (_enough_repeat_candidates(candidates) and not _is_scattered(candidates, regions)):
-        return {
+        result = {
             "mode": "results",
             "post_count": post_count,
             "candidates": _finalize_candidates(candidates),
         }
+        logger.info(
+            "search done keyword=%r mode=results posts=%d shown=%d total=%.1fs",
+            keyword,
+            post_count,
+            len(result["candidates"]),
+            time.monotonic() - started,
+        )
+        return result
 
     overview_regions = extract_region_overview(posts, keyword)
+    logger.info(
+        "search done keyword=%r mode=overview posts=%d regions=%d total=%.1fs",
+        keyword,
+        post_count,
+        len(overview_regions),
+        time.monotonic() - started,
+    )
     return {"mode": "overview", "post_count": post_count, "regions": overview_regions}
 
 
@@ -164,11 +216,24 @@ def _verified_candidates(guesses, regions, radius):
             order_names.append(name)
         posts_by_name[name].append(guess["post"])
 
+    local_search_failures = []
+
     def resolve(name):
-        return name, _resolve_place(name, regions=regions, radius=radius)
+        return name, _resolve_place(
+            name, regions=regions, radius=radius, failures=local_search_failures
+        )
 
     with ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as executor:
         places_by_name = dict(executor.map(resolve, order_names))
+
+    if local_search_failures:
+        # 이름마다 찍으면 한 검색에 수십 줄이 나와서, 검증 1회당 한 줄로 요약합니다.
+        logger.warning(
+            "naver_local_search 실패 %d/%d건(무시하고 진행). 첫 실패: %s",
+            len(local_search_failures),
+            len(order_names),
+            local_search_failures[0],
+        )
 
     grouped = {}
     order = []
@@ -222,7 +287,7 @@ def _distance_sq(x1, y1, x2, y2):
     return (x1 - x2) ** 2 + (y1 - y2) ** 2
 
 
-def _resolve_place(name, regions, radius):
+def _resolve_place(name, regions, radius, failures=None):
     """검색어에서 추출된 지역 각각으로 카카오맵 검증을 시도합니다 (지역이 없으면 이 단계는
     건너뜁니다). 실패하면 네이버 지역검색으로 실제 등록명을 얻어 지역별로 재시도하고,
     그래도 안 되면 지역 제한 없이 전국에서 한 번 더 찾아봅니다."""
@@ -233,7 +298,17 @@ def _resolve_place(name, regions, radius):
 
     try:
         hits = naver_local_search(name, display=5)
-    except requests.RequestException:
+    except requests.RequestException as error:
+        # 동작은 그대로(빈 결과로 진행)지만, 한도 초과 등이 조용히 묻히지 않게
+        # 호출자(_verified_candidates)가 요약해서 남기도록 모읍니다.
+        detail = (
+            describe_http_error(error, include_body=False)
+            if isinstance(error, requests.HTTPError)
+            else type(error).__name__
+        )
+        logger.debug("naver_local_search 실패 name=%r: %s", name, detail)
+        if failures is not None:
+            failures.append(f"name={name!r} {detail}")
         hits = []
 
     for hit in hits:
@@ -270,7 +345,13 @@ def _attach_business_hours(results):
 
     try:
         hours_by_id = get_business_hours(place_ids)
-    except requests.RequestException:
+    except requests.RequestException as error:
+        logger.warning(
+            "get_business_hours 실패(영업시간 없이 진행): %s",
+            describe_http_error(error)
+            if isinstance(error, requests.HTTPError)
+            else type(error).__name__,
+        )
         return
 
     for result in results:
