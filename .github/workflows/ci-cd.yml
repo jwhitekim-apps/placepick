@@ -110,9 +110,9 @@ jobs:
             -i ~/.ssh/placepick_deploy \
             -p "$SSH_PORT" \
             "$SSH_USER@$SSH_HOST" \
-            'wsl.exe -- bash -s' <<'REMOTE_SCRIPT'
+            'bash -s' <<'REMOTE_SCRIPT'
           set -euo pipefail
-          cd /mnt/c/Users/admin/joonspace/naver-blog-to-kakao-map
+          cd ~/workspace/naver-blog-to-kakao-map
           git fetch origin main
           git reset --hard origin/main
           docker compose up -d --build
