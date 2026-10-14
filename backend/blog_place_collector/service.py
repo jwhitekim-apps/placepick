@@ -94,9 +94,22 @@ def _collect_candidates(keyword):
     logger.info("keyword=%r regions=%s", keyword, regions)
     extracted_count = 0
     previous_confirmed = 0
+    # sim 정렬이라 앞쪽 글은 tier가 올라가도 그대로이므로, 이미 받은 글은 재사용하고
+    # 모자란 만큼만 이어서 받습니다(tier마다 처음부터 다시 받으면 100/200/300개에
+    # 1/2/3번 호출 — 네이버 초당 한도를 불필요하게 소모). 직전 요청에서 결과가 바닥나면
+    # 더 요청하지 않습니다(처음부터 다시 받아도 같은 글만 돌아오던 기존 동작과 동일).
+    exhausted = False
+    # 이름→검증 결과 캐시. tier마다 guesses 전체를 다시 검증하는데, 이전 tier에서 이미
+    # 검증한 이름은 결과가 같으므로 재사용합니다(네이버 지역검색 호출이 초당 한도에
+    # 걸려 대기하므로 중복 호출이 곧 대기 시간).
+    resolved_places = {}
     for target_count in COLLECTION_TIERS:
         tier_started = time.monotonic()
-        posts = naver_blog_search(keyword=keyword, target_count=target_count)
+        if not exhausted and len(posts) < target_count:
+            requested = target_count - len(posts)
+            more = naver_blog_search(keyword=keyword, target_count=requested, start=len(posts) + 1)
+            exhausted = len(more) < requested
+            posts = posts + more
         if not posts:
             logger.info("keyword=%r tier=%d: 블로그 글 0개 — 중단", keyword, target_count)
             break
@@ -107,7 +120,9 @@ def _collect_candidates(keyword):
             guesses.extend(extract_business_names(new_posts, keyword))
             extracted_count = len(posts)
         verify_started = time.monotonic()
-        candidates = _verified_candidates(guesses, regions=regions, radius=DEFAULT_RADIUS)
+        candidates = _verified_candidates(
+            guesses, regions=regions, radius=DEFAULT_RADIUS, cache=resolved_places
+        )
         verify_elapsed = time.monotonic() - verify_started
 
         confirmed = sum(1 for c in candidates if c["mention_count"] >= MIN_REPEAT_MENTION)
@@ -200,7 +215,7 @@ def search_collection(keyword):
     return {"mode": "overview", "post_count": post_count, "regions": overview_regions}
 
 
-def _verified_candidates(guesses, regions, radius):
+def _verified_candidates(guesses, regions, radius, cache=None):
     """LLM이 느슨하게 추출한 후보를 카카오맵 검색으로 검증합니다.
     실제로 존재하는 장소만 남기고, 카카오맵 장소 ID 기준으로 묶어 언급 횟수 순으로 정렬합니다.
 
@@ -223,15 +238,19 @@ def _verified_candidates(guesses, regions, radius):
             name, regions=regions, radius=radius, failures=local_search_failures
         )
 
+    if cache is None:
+        cache = {}
+    unresolved = [name for name in order_names if name not in cache]
     with ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as executor:
-        places_by_name = dict(executor.map(resolve, order_names))
+        cache.update(executor.map(resolve, unresolved))
+    places_by_name = cache
 
     if local_search_failures:
         # 이름마다 찍으면 한 검색에 수십 줄이 나와서, 검증 1회당 한 줄로 요약합니다.
         logger.warning(
             "naver_local_search 실패 %d/%d건(무시하고 진행). 첫 실패: %s",
             len(local_search_failures),
-            len(order_names),
+            len(unresolved),
             local_search_failures[0],
         )
 
