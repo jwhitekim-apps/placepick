@@ -4,7 +4,5 @@ services:
     ports:
       - "0.0.0.0:${PORT:-8001}:${PORT:-8001}"
     env_file:
-      - backend/.env
-    volumes:
-      - ./backend/settings/settings.yaml:/app/backend/settings/settings.yaml:ro
+      - .env
     restart: unless-stopped

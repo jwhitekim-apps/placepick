@@ -23,9 +23,7 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 
 **응답 스키마 제약(`minItems`/`maxItems`)은 강력하지만 상한이 있다.** 실측 확인: 140개 항목부터 Gemini API가 400을 반환한다. 이 크기를 넘는 배치는 청크로 나눠 호출한다(`MAX_ITEMS_PER_CALL` 패턴 참고, `gemini.py`).
 
-**`backend/settings/settings.yaml`은 `.gitignore`돼 있다.** 배포 서버의 파일은 git push로 갱신되지 않는다. `config.py`가 읽는 설정 키 이름을 바꾸면 배포 서버가 옛날 키로 남아있는 파일 때문에 `KeyError`로 죽을 수 있다 — 실제로 한 번 발생했다. 설정 키 이름을 바꿀 때는:
-1. `settings.example.yaml`(git 추적됨)도 같이 바꾼다.
-2. 하위호환이 필요한지, 아니면 배포 서버 파일을 수동으로 갱신해야 하는지 사람에게 명확히 알린다 — 조용히 넘어가지 않는다.
+**설정값은 `config.py`의 대문자 상수다(`TARGET_COUNT`, `KAKAO_SEARCH_RADIUS` 등).** 예전엔 gitignore된 `backend/settings/settings.yaml`에서 읽었는데, 배포 서버 파일이 git push로 갱신되지 않아 키 이름 변경 후 `KeyError`로 서버가 죽은 적이 있어서 YAML을 없앴다. 이제 설정 변경은 코드 변경이라 git으로 그대로 배포된다. git으로 배포되지 않는 건 루트 `.env`(API 키)뿐이다 — 새 환경변수를 추가하면 `.env.example`도 갱신하고, 배포 서버 `.env`에 수동으로 넣어야 한다고 사람에게 명확히 알린다.
 
 **외부 API 호출은 최대한 병렬화·중복 제거한다.** 카카오 검증에서 같은 이름을 여러 번 조회하던 걸 이름 기준으로 중복 제거 + `ThreadPoolExecutor`로 병렬화해서 9배 빨라진 사례가 있다. 순차 루프로 외부 API를 여러 번 부르는 코드를 새로 짤 때는 이 패턴을 먼저 고려한다.
 

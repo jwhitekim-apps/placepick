@@ -155,6 +155,6 @@ cat <<EOF
 HTTPS is ready:
   https://$DOMAIN
 
-If you change backend/.env or backend/settings/settings.yaml, restart the app:
+If you change .env, restart the app:
   docker compose up -d --force-recreate app
 EOF

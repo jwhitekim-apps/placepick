@@ -1,6 +1,6 @@
 ---
 name: backend-work
-description: Placepick 백엔드(backend/blog_place_collector) 작업 시 반드시 사용한다 — service.py의 수집/추출/검증 파이프라인, api.py 라우트, clients/{gemini,kakao,naver}.py 수정, 설정(config.py, settings.yaml) 변경, 추출 정확도·검색 속도·API 연동 버그 디버깅 전부 해당. "백엔드 고쳐줘", "검색 결과가 이상해", "추출이 부정확해", "API 바꿔줘" 같은 요청에서 트리거.
+description: Placepick 백엔드(backend/blog_place_collector) 작업 시 반드시 사용한다 — service.py의 수집/추출/검증 파이프라인, api.py 라우트, clients/{gemini,kakao,naver}.py 수정, 설정(config.py 상수, .env) 변경, 추출 정확도·검색 속도·API 연동 버그 디버깅 전부 해당. "백엔드 고쳐줘", "검색 결과가 이상해", "추출이 부정확해", "API 바꿔줘" 같은 요청에서 트리거.
 ---
 
 # Placepick 백엔드 작업
@@ -17,7 +17,7 @@ description: Placepick 백엔드(backend/blog_place_collector) 작업 시 반드
 1. **Gemini 호출은 항상 `temperature=0`.** 재현성 문제(같은 검색이 매번 다른 결과)의 첫 번째 의심 대상.
 2. **`minItems`/`maxItems` 스키마 제약은 140개 근처에서 API가 400을 반환한다(실측).** 큰 배치는 청크로 나눈다.
 3. **외부 API는 이름/키 기준으로 중복 제거 후 병렬 호출.** 카카오 검증에서 9배 속도 개선 사례(`ThreadPoolExecutor`, `service.py`의 `_verified_candidates` 참고).
-4. **`backend/settings/settings.yaml`은 gitignore돼 있다.** 배포 서버 파일은 git push로 안 바뀐다 — 설정 키 이름을 바꾸면 배포 서버가 죽을 수 있다. 키를 바꿀 땐 하위호환을 넣거나, 서버 파일을 수동으로 고쳐야 한다고 명확히 알린다.
+4. **설정은 `config.py` 대문자 상수다(settings YAML은 제거됨).** 설정 변경도 git push로 배포된다. git으로 안 가는 건 루트 `.env`(API 키)뿐 — 새 환경변수를 추가하면 `.env.example`도 고치고, 배포 서버 `.env`를 수동으로 갱신해야 한다고 명확히 알린다.
 
 ## 작업 방식
 

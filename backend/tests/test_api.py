@@ -18,7 +18,7 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertEqual(
             set(body["credentials"]),
-            {"gemini", "kakao_rest", "naver_local", "settings"},
+            {"gemini", "kakao_rest", "naver_local"},
         )
         self.assertTrue(all(isinstance(value, bool) for value in body["credentials"].values()))
 

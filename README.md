@@ -54,8 +54,7 @@ and the [Naver Search API](https://developers.naver.com/apps/#/register)
 (client ID + secret).
 
 ```bash
-cp backend/.env.example backend/.env          # fill in your API keys
-cp backend/settings/settings.example.yaml backend/settings/settings.yaml
+cp .env.example .env          # fill in your API keys
 
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt

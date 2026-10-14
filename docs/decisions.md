@@ -20,6 +20,8 @@
 12. [진행 메시지가 거짓말을 하고 있었다 + 카카오 검증 최적화](#12-진행-메시지가-거짓말을-하고-있었다--실제-병목카카오-검증-최적화)
 13. [블로그 수집을 비공식 스크래핑에서 공식 API로 전환](#13-블로그-수집을-비공식-스크래핑에서-공식-api로-전환)
 14. [설정 디렉토리 이름 정리와 죽은 설정 필드 제거](#14-설정-디렉토리-이름-정리와-죽은-설정-필드-제거)
+15. [settings YAML 제거와 .env 루트 이동](#15-settings-yaml-제거와-env-루트-이동)
+16. [네이버 초당 10건 한도 대응](#16-네이버-초당-10건-한도-대응)
 
 ---
 
@@ -594,3 +596,45 @@ API(`openapi.naver.com/v1/search/blog.json`)로 바꾸기로 했다.
   `settings: true` 반환(새 경로 인식). 실 API로 `naver_blog_search`(성수동 카페),
   `get_area_anchor`(성수동), `search_place` local/nationwide 모두 정상 동작 확인.
   `docker build`도 통과(이미지 안에서 config 로드까지 확인).
+
+---
+
+## 15. settings YAML 제거와 .env 루트 이동
+
+- **결정**: `backend/settings/`(settings.yaml / settings.example.yaml)를 통째로
+  없애고, 남은 두 값을 `config.py` 대문자 상수로 옮겼다:
+  `TARGET_COUNT = 300`, `KAKAO_SEARCH_RADIUS = 5000`.
+- **이유**: settings.yaml은 gitignore라 배포 서버 파일이 git push로 갱신되지
+  않았고, 키 이름을 바꿀 때마다 서버가 KeyError로 죽거나(실제 사고) 사람이 수동으로
+  맞춰야 했다(14절). 남은 값은 비밀이 아니고 사용자가 바꿀 일도 거의 없으므로 코드
+  상수로 두는 게 맞다. 이제 설정 변경 = 코드 변경 = git 배포.
+- 함께 정리: `PyYAML` 의존성 제거, docker-compose의 settings.yaml 볼륨 마운트 제거,
+  `.gitignore`의 `settings.yaml` 줄 제거, `/api/health`의 `credentials.settings`
+  필드 제거(프론트엔드는 쓰지 않음, test_api만 갱신).
+- **.env 루트 이동**: `backend/.env` → 저장소 루트 `.env`(`.env.example`도 루트).
+  `config.py`는 `PROJECT_ROOT.parent / ".env"`를 읽고 docker-compose `env_file`도
+  `.env`. git으로 배포되지 않는 파일은 이제 루트 `.env` 하나뿐이다.
+- **배포 서버 수동 작업**: `mv backend/.env .env` 후
+  `docker compose up -d --build`. 남아 있는 `backend/settings/` 디렉토리는 더 이상
+  읽지 않으므로 지워도 된다(`rm -rf backend/settings`).
+
+---
+
+## 16. 네이버 초당 10건 한도 대응
+
+- **문제**: 네이버 Open API 한도는 클라이언트 ID 기준 초당 10건이고 blog/local
+  검색이 한도를 공유한다(응답 헤더 `x-rate-limit: 10`, 1초 단위 리셋 — 실측).
+  카카오 검증 실패 시 병렬로 부르는 `naver_local_search`와 tier별 블로그 수집이
+  겹치면 429가 났다.
+- **결정**:
+  - 모든 네이버 호출을 `_naver_get` 한 경로로 모으고, 프로세스 전역·스레드 안전한
+    최소 간격 rate limiter(`NAVER_REQUESTS_PER_SECOND = 8`, 버스트 없음)를 건다.
+    10이 아니라 8인 건 서버 측 창 경계와 시계 오차 여유.
+  - 429를 받으면 `Retry-After` → `x-rate-limit-reset` → 1초 순으로 대기 시간을
+    정해(0.2~3초로 클램프) 최대 3회 재시도하고, 그 동안 limiter 전체를 뒤로 미룬다.
+  - **tier 증분 수집**: sim 정렬은 앞쪽 결과가 고정이라(실측) tier가 올라갈 때
+    처음부터 다시 받지 않고 `start=len(posts)+1`로 모자란 만큼만 이어 받는다.
+    결과가 요청보다 적게 오면 소진으로 보고 더 요청하지 않는다.
+  - **tier 간 검증 캐시**: `_verified_candidates`에 이름→검증 결과 캐시를 넘겨,
+    이전 tier에서 검증한 이름은 다시 조회하지 않는다(같은 이름이면 결과도 같다).
+- 테스트: `backend/tests/test_naver_client.py`(limiter 간격, 429 재시도, 증분 수집).
