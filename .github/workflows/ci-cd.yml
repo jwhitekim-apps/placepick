@@ -112,7 +112,7 @@ jobs:
             "$SSH_USER@$SSH_HOST" \
             'bash -s' <<'REMOTE_SCRIPT'
           set -euo pipefail
-          cd ~/workspace/naver-blog-to-kakao-map
+          cd ~/workspace/placepick
           git fetch origin main
           git reset --hard origin/main
           docker compose up -d --build
