@@ -30,7 +30,7 @@ def _build_frontend():
 
     if not (FRONTEND_ROOT / "node_modules").exists():
         raise SystemExit(
-            "프론트엔드 의존성이 없습니다. 먼저 `make setup`을 실행해 주세요."
+            "프론트엔드 의존성이 없습니다. 먼저 저장소 루트에서 `npm --prefix frontend ci`를 실행해 주세요."
         )
 
     print("Svelte 프론트엔드를 빌드합니다...")
